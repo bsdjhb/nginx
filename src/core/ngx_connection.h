@@ -115,6 +115,15 @@ typedef enum {
 #define NGX_SPDY_BUFFERED      0x02
 
 
+#if (NGX_HAVE_AIO)
+
+typedef struct ngx_aio_chain_s {
+    struct aiocb     aiocb;
+    struct ngx_aio_chain_s *next;
+} ngx_aio_chain_t;
+
+#endif
+
 struct ngx_connection_s {
     void               *data;
     ngx_event_t        *read;
@@ -178,6 +187,12 @@ struct ngx_connection_s {
 
 #if (NGX_HAVE_IOCP)
     unsigned            accept_context_updated:1;
+#endif
+
+#if (NGX_HAVE_AIO)
+    ngx_aio_chain_t *aio_chain;
+    ngx_aio_chain_t *aio_tail;
+    off_t	     aio_inflight;
 #endif
 
 #if (NGX_HAVE_AIO_SENDFILE)
