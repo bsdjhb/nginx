@@ -591,7 +591,10 @@ ngx_http_create_request(ngx_connection_t *c)
 
 #if (NGX_HTTP_SSL)
     if (c->ssl) {
-        r->main_filter_need_in_memory = 1;
+#if (NGX_SSL_SENDFILE)
+        if (c->ssl->can_use_sendfile == 0)
+#endif
+            r->main_filter_need_in_memory = 1;
     }
 #endif
 
@@ -736,8 +739,13 @@ ngx_http_ssl_handshake(ngx_event_t *rev)
             sscf = ngx_http_get_module_srv_conf(hc->conf_ctx,
                                                 ngx_http_ssl_module);
 
-            if (ngx_ssl_create_connection(&sscf->ssl, c, NGX_SSL_BUFFER)
-                != NGX_OK)
+            if (ngx_ssl_create_connection(&sscf->ssl, c,
+#if (NGX_SSL_SENDFILE)
+                                                        0
+#else
+                                                        NGX_SSL_BUFFER
+#endif
+                ) != NGX_OK)
             {
                 ngx_http_close_connection(c);
                 return;

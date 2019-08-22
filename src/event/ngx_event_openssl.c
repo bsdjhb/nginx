@@ -32,6 +32,10 @@ static void ngx_ssl_shutdown_handler(ngx_event_t *ev);
 static void ngx_ssl_connection_error(ngx_connection_t *c, int sslerr,
     ngx_err_t err, char *text);
 static void ngx_ssl_clear_error(ngx_log_t *log);
+#if (NGX_SSL_SENDFILE)
+static ssize_t ngx_ssl_sendfile(ngx_connection_t *c, int fd, off_t off,
+    size_t size, int flags);
+#endif
 
 static ngx_int_t ngx_ssl_session_id_context(ngx_ssl_t *ssl,
     ngx_str_t *sess_ctx);
@@ -1305,7 +1309,11 @@ ngx_ssl_handshake(ngx_connection_t *c)
         c->recv = ngx_ssl_recv;
         c->send = ngx_ssl_write;
         c->recv_chain = ngx_ssl_recv_chain;
+#if (NGX_SSL_SENDFILE)
+        c->send_chain = ngx_ssl_sendfile_chain;
+#else
         c->send_chain = ngx_ssl_send_chain;
+#endif
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 #ifdef SSL3_FLAGS_NO_RENEGOTIATE_CIPHERS
@@ -1316,6 +1324,13 @@ ngx_ssl_handshake(ngx_connection_t *c)
         }
 
 #endif
+#endif
+
+#if (NGX_SSL_SENDFILE)
+        c->ssl->can_use_sendfile = SSL_can_use_sendfile(c->ssl->connection);
+        ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0,
+                       "SSL_can_use_sendfile: %d", c->ssl->can_use_sendfile);
+        c->sendfile = c->ssl->can_use_sendfile ? 1 : 0;
 #endif
 
         return NGX_OK;
@@ -1806,6 +1821,158 @@ ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     return in;
 }
 
+#if (NGX_SSL_SENDFILE)
+ngx_chain_t *
+ngx_ssl_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
+{
+    int     can_use_sendfile;
+    ssize_t n;
+
+    can_use_sendfile = SSL_can_use_sendfile(c->ssl->connection);
+
+    ngx_log_debug5(NGX_LOG_DEBUG_SSL, c->log, 0,
+        "Sending chain %p can_use_sendfile:%d c->sendfile:%d " \
+        "c->ssl->buffer:%d limit:%O",
+         in, can_use_sendfile, c->sendfile, c->ssl->buffer, limit);
+
+    if (! (can_use_sendfile && c->sendfile) || c->ssl->buffer) {
+        return ngx_ssl_send_chain(c, in, limit);
+    }
+
+    /* the maximum limit size is the maximum int32_t value - the page size */
+    if (limit == 0 || limit > (off_t) (NGX_MAX_INT32_VALUE - ngx_pagesize)) {
+        limit = NGX_MAX_INT32_VALUE - ngx_pagesize;
+    }
+
+    while (in) {
+        if (ngx_buf_special(in->buf)) {
+            in = in->next;
+            continue;
+        }
+
+        if (in->buf->in_file) {
+            ngx_chain_t *cl;
+            int          sendfile_flags;
+            off_t        sendfile_size;
+
+            cl = in;
+            sendfile_flags = /* in->buf->sendfile_flags |*/ SF_NODISKIO;
+            sendfile_size = ngx_chain_coalesce_file(&cl, limit);
+
+            n = ngx_ssl_sendfile(c, in->buf->file->fd, in->buf->file_pos,
+                                 sendfile_size, sendfile_flags);
+            ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0,
+                       "ngx_ssl_sendfile returns:%z", n);
+        } else {
+            n = ngx_ssl_write(c, in->buf->pos, in->buf->last - in->buf->pos);
+            ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0,
+                       "ngx_ssl_write returns:%z", n);
+        }
+       
+        if (n == NGX_ERROR) {
+            return NGX_CHAIN_ERROR;
+        }
+        if (n == NGX_AGAIN) {
+            return in;
+        }
+        if (n == NGX_BUSY) {
+            c->busy_count = 1;
+            c->write->delayed = 1;
+            ngx_add_timer(c->write, 10);
+            return in;
+        }
+
+        in = ngx_chain_update_sent(in, (off_t) n);
+    }
+
+    return in;
+}
+
+static ssize_t
+ngx_ssl_sendfile(ngx_connection_t *c, int fd, off_t off, size_t size, int flags)
+{
+    int       n, sslerr, bioerr;
+    ngx_err_t err;
+
+    ngx_ssl_clear_error(c->log);
+
+    ngx_log_debug3(NGX_LOG_DEBUG_SSL, c->log, 0,
+        "SSL to sendfile: %uz at %O with %Xd", size, off, flags);
+
+    n = SSL_sendfile(fd, c->ssl->connection, off, size, NULL, flags);
+
+    ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0, "SSL_sendfile: %d", n);
+
+    if (n > 0) {
+
+        if (c->ssl->saved_read_handler) {
+
+            c->read->handler = c->ssl->saved_read_handler;
+            c->ssl->saved_read_handler = NULL;
+            c->read->ready = 1;
+
+            if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+                    return NGX_ERROR;
+            }
+
+            ngx_post_event(c->read, &ngx_posted_events);
+        }
+
+        c->sent += n;
+
+        return n;
+    }
+
+    sslerr = SSL_get_error(c->ssl->connection, n);
+    bioerr = SSL_get_wbio_error(c->ssl->connection);
+
+    if (bioerr == NGX_EBUSY) {
+       ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0, "bioerr=NGX_EBUSY, sslerr=%d", sslerr);
+       return NGX_BUSY;
+    }
+
+    err = (sslerr == SSL_ERROR_SYSCALL) ? ngx_errno : 0;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0, "SSL_get_error: %d", sslerr);
+
+    if (sslerr == SSL_ERROR_WANT_WRITE) {
+        c->write->ready = 0;
+       return NGX_AGAIN;
+    }
+
+    if (sslerr == SSL_ERROR_WANT_READ) {
+
+        ngx_log_error(NGX_LOG_INFO, c->log, 0,
+                      "peer started SSL renegotiation");
+
+        c->read->ready = 0;
+
+        if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        /*
+         * we do not set the timer because there is already
+         * the write event timer
+         */
+
+        if (c->ssl->saved_read_handler == NULL) {
+            c->ssl->saved_read_handler = c->read->handler;
+            c->read->handler = ngx_ssl_read_handler;
+        }
+
+        return NGX_AGAIN;
+    }
+
+    c->ssl->no_wait_shutdown = 1;
+    c->ssl->no_send_shutdown = 1;
+    c->write->error = 1;
+
+    ngx_ssl_connection_error(c, sslerr, err, "SSL_sendfile() failed");
+
+    return NGX_ERROR;
+}
+#endif
 
 ssize_t
 ngx_ssl_write(ngx_connection_t *c, u_char *data, size_t size)
