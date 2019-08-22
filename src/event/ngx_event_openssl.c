@@ -1924,7 +1924,7 @@ ngx_ssl_sendfile(ngx_connection_t *c, int fd, off_t off, size_t size, int flags)
     }
 
     sslerr = SSL_get_error(c->ssl->connection, n);
-    bioerr = SSL_get_wbio_error(c->ssl->connection);
+    bioerr = BIO_get_error(SSL_get_wbio(c->ssl->connection));
 
     if (bioerr == NGX_EBUSY) {
        ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0, "bioerr=NGX_EBUSY, sslerr=%d", sslerr);
