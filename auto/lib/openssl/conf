@@ -123,6 +123,14 @@ else
             CORE_INCS="$CORE_INCS $ngx_feature_path"
             CORE_LIBS="$CORE_LIBS $ngx_feature_libs"
             OPENSSL=YES
+
+            ngx_feature="SSL_sendfile()"
+            ngx_feature_name="NGX_SSL_SENDFILE"
+            ngx_feature_run=no
+            ngx_feature_test="SSL *ssl;
+                              (void)BIO_get_ktls_send(SSL_get_wbio(ssl));
+                              SSL_sendfile(ssl, -1, 0, 0, 0);"
+            . auto/feature
         fi
     fi
 

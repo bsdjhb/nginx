@@ -106,6 +106,9 @@ struct ngx_ssl_connection_s {
     unsigned                    in_ocsp:1;
     unsigned                    early_preread:1;
     unsigned                    write_blocked:1;
+#if (NGX_SSL_SENDFILE)
+    unsigned                    can_use_sendfile:1;
+#endif
 };
 
 
@@ -289,6 +292,10 @@ ssize_t ngx_ssl_write(ngx_connection_t *c, u_char *data, size_t size);
 ssize_t ngx_ssl_recv_chain(ngx_connection_t *c, ngx_chain_t *cl, off_t limit);
 ngx_chain_t *ngx_ssl_send_chain(ngx_connection_t *c, ngx_chain_t *in,
     off_t limit);
+#if (NGX_SSL_SENDFILE)
+ngx_chain_t *ngx_ssl_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in,
+    off_t limit);
+#endif
 void ngx_ssl_free_buffer(ngx_connection_t *c);
 ngx_int_t ngx_ssl_shutdown(ngx_connection_t *c);
 void ngx_cdecl ngx_ssl_error(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,

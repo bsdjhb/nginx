@@ -1715,6 +1715,11 @@ ngx_http_upstream_ssl_init_connection(ngx_http_request_t *r,
         return;
     }
 
+#if (NGX_SSL_SENDFILE)
+    c->sendfile = 0;
+    u->output.sendfile = 0;
+#endif
+
     ngx_http_upstream_ssl_handshake(r, u, c);
 }
 
