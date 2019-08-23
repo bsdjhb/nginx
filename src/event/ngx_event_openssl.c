@@ -1856,7 +1856,11 @@ ngx_ssl_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
             off_t        sendfile_size;
 
             cl = in;
+#ifdef __FreeBSD__
             sendfile_flags = /* in->buf->sendfile_flags |*/ SF_NODISKIO;
+#else
+            sendfile_flags = in->buf->sendfile_flags;
+#endif
             sendfile_size = ngx_chain_coalesce_file(&cl, limit);
 
             n = ngx_ssl_sendfile(c, in->buf->file->fd, in->buf->file_pos,
