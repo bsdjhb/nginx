@@ -1327,9 +1327,9 @@ ngx_ssl_handshake(ngx_connection_t *c)
 #endif
 
 #if (NGX_SSL_SENDFILE)
-        c->ssl->can_use_sendfile = SSL_can_use_sendfile(c->ssl->connection);
+        c->ssl->can_use_sendfile = BIO_get_ktls_send(SSL_get_wbio(c->ssl->connection));
         ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0,
-                       "SSL_can_use_sendfile: %d", c->ssl->can_use_sendfile);
+                       "BIO_get_ktls_send: %d", c->ssl->can_use_sendfile);
         c->sendfile = c->ssl->can_use_sendfile ? 1 : 0;
 #endif
 
@@ -1828,7 +1828,7 @@ ngx_ssl_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     int     can_use_sendfile;
     ssize_t n;
 
-    can_use_sendfile = SSL_can_use_sendfile(c->ssl->connection);
+    can_use_sendfile = BIO_get_ktls_send(SSL_get_wbio(c->ssl->connection));
 
     ngx_log_debug5(NGX_LOG_DEBUG_SSL, c->log, 0,
         "Sending chain %p can_use_sendfile:%d c->sendfile:%d " \
@@ -1891,7 +1891,7 @@ ngx_ssl_sendfile_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 static ssize_t
 ngx_ssl_sendfile(ngx_connection_t *c, int fd, off_t off, size_t size, int flags)
 {
-    int       n, sslerr, bioerr;
+    int       n, sslerr;
     ngx_err_t err;
 
     ngx_ssl_clear_error(c->log);
@@ -1899,7 +1899,7 @@ ngx_ssl_sendfile(ngx_connection_t *c, int fd, off_t off, size_t size, int flags)
     ngx_log_debug3(NGX_LOG_DEBUG_SSL, c->log, 0,
         "SSL to sendfile: %uz at %O with %Xd", size, off, flags);
 
-    n = SSL_sendfile(fd, c->ssl->connection, off, size, NULL, flags);
+    n = SSL_sendfile(c->ssl->connection, fd, off, size, flags);
 
     ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0, "SSL_sendfile: %d", n);
 
@@ -1924,12 +1924,13 @@ ngx_ssl_sendfile(ngx_connection_t *c, int fd, off_t off, size_t size, int flags)
     }
 
     sslerr = SSL_get_error(c->ssl->connection, n);
-    bioerr = BIO_get_error(SSL_get_wbio(c->ssl->connection));
 
-    if (bioerr == NGX_EBUSY) {
+#ifdef __FreeBSD__
+    if (sslerr == SSL_ERROR_WANT_WRITE && ngx_errno == EBUSY) {
        ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0, "bioerr=NGX_EBUSY, sslerr=%d", sslerr);
        return NGX_BUSY;
     }
+#endif
 
     err = (sslerr == SSL_ERROR_SYSCALL) ? ngx_errno : 0;
 
