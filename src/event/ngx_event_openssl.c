@@ -1661,7 +1661,7 @@ ngx_ssl_handshake(ngx_connection_t *c)
 #endif
 
 #if (NGX_SSL_SENDFILE)
-        c->ssl->can_use_sendfile = BIO_get_ktls_send(SSL_get_wbio(c->ssl->connection));
+        c->ssl->can_use_sendfile = !!BIO_get_ktls_send(SSL_get_wbio(c->ssl->connection));
         ngx_log_debug1(NGX_LOG_DEBUG_SSL, c->log, 0,
                        "BIO_get_ktls_send: %d", c->ssl->can_use_sendfile);
         c->sendfile = c->ssl->can_use_sendfile ? 1 : 0;
